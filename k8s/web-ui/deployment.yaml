@@ -1,0 +1,182 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-ui-config
+  namespace: kitchen-app
+data:
+  nginx.conf: |
+    server {
+        listen 80;
+        root /usr/share/nginx/html;
+        index index.html;
+
+        # Same-origin API proxy (works in Docker Compose + Kubernetes)
+        location /api/ {
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+
+            proxy_pass http://api:3000/;
+        }
+
+        location /health {
+            access_log off;
+            default_type text/plain;
+            return 200 'OK';
+        }
+
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+    }
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Kitchen Orders</title>
+      <style>
+        :root { --bg:#0b1120; --card:#111827; --border:#263347; --text:#e5e7eb; --muted:#9ca3af; --blue:#58a6ff; --green:#3fb950; --red:#f78166; }
+        body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); max-width: 880px; margin: 0 auto; padding: 28px 16px; }
+        h1 { margin: 0 0 10px; font-size: 28px; }
+        .sub { color: var(--muted); margin: 0 0 18px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+        .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
+        .row { display:flex; gap:10px; align-items:center; }
+        input { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: #0d1117; color: var(--text); }
+        button { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: rgba(88,166,255,.15); color: var(--text); cursor:pointer; }
+        button:hover { background: rgba(88,166,255,.25); }
+        .pill { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border:1px solid var(--border); border-radius:999px; color: var(--muted); font-size: 12px; }
+        .ok { color: var(--green); }
+        .bad { color: var(--red); }
+        table { width:100%; border-collapse: collapse; font-size: 14px; }
+        th, td { padding: 10px 8px; border-bottom: 1px solid rgba(38,51,71,.65); text-align: left; }
+        th { color: var(--muted); font-weight: 600; }
+        a { color: var(--blue); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .footer { margin-top: 14px; color: var(--muted); font-size: 12px; }
+        @media (max-width: 820px) { .grid { grid-template-columns: 1fr; } }
+      </style>
+    </head>
+    <body>
+      <h1>Kitchen Orders</h1>
+      <p class="sub">Create orders and watch them show up in MongoDB. This UI calls the API through a same-origin proxy at <code>/api</code>.</p>
+      <div class="grid">
+        <div class="card">
+          <div class="row" style="justify-content:space-between; margin-bottom:10px;">
+            <div class="pill">API status: <span id="apiStatus" class="bad">checking…</span></div>
+            <div class="row" style="gap:12px;">
+              <a href="/api/metrics" target="_blank" rel="noreferrer">/metrics</a>
+              <a href="/api/health" target="_blank" rel="noreferrer">/health</a>
+            </div>
+          </div>
+          <div class="row">
+            <input id="dish" placeholder="Dish name (e.g. Masala Dosa)" autocomplete="off" />
+            <button id="createBtn">Create order</button>
+          </div>
+          <div class="footer" id="createMsg"></div>
+        </div>
+        <div class="card">
+          <div class="row" style="justify-content:space-between; margin-bottom:10px;">
+            <div class="pill">Orders: <span id="orderCount">0</span></div>
+            <div class="row"><button id="refreshBtn">Refresh</button></div>
+          </div>
+          <div style="overflow:auto;">
+            <table>
+              <thead><tr><th>Dish</th><th>Status</th><th>Created</th><th>ID</th></tr></thead>
+              <tbody id="ordersBody"><tr><td colspan="4" style="color:var(--muted);">Loading…</td></tr></tbody>
+            </table>
+          </div>
+          <div class="footer">Tip: keep this page open, then hit Prometheus/Grafana to see <code>http_requests_total</code> increase.</div>
+        </div>
+      </div>
+      <script>
+        const apiBase = '/api';
+        const el = (id) => document.getElementById(id);
+        function fmtDate(v) { try { const d = new Date(v); if (Number.isNaN(d.getTime())) return ''; return d.toLocaleString(); } catch { return ''; } }
+        async function apiGet(path) { const r = await fetch(apiBase + path, { headers: { 'Accept': 'application/json' } }); return { r, data: await r.json().catch(() => null) }; }
+        async function refreshHealth() { const s = el('apiStatus'); try { const { r, data } = await apiGet('/health'); if (r.ok) { s.textContent = data?.db ? `ok (db: ${data.db})` : 'ok'; s.className = 'ok'; } else { s.textContent = `error (${r.status})`; s.className = 'bad'; } } catch (e) { s.textContent = 'offline'; s.className = 'bad'; } }
+        async function refreshOrders() {
+          const body = el('ordersBody');
+          body.innerHTML = '<tr><td colspan="4" style="color:var(--muted);">Loading…</td></tr>';
+          try {
+            const { r, data } = await apiGet('/orders');
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            const orders = Array.isArray(data) ? data : [];
+            el('orderCount').textContent = String(orders.length);
+            if (!orders.length) { body.innerHTML = '<tr><td colspan="4" style="color:var(--muted);">No orders yet. Create one on the left.</td></tr>'; return; }
+            body.innerHTML = orders.slice().reverse().map(o => {
+              const id = (o && (o._id?.toString ? o._id.toString() : o._id)) || '';
+              return `<tr><td>${(o?.dish || '')}</td><td>${(o?.status || '')}</td><td>${fmtDate(o?.createdAt)}</td><td style="color:var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px;">${id}</td></tr>`;
+            }).join('');
+          } catch (e) {
+            el('orderCount').textContent = '—';
+            body.innerHTML = `<tr><td colspan="4" style="color:var(--red);">Failed to load orders. Is the API reachable at ${apiBase}/orders?</td></tr>`;
+          }
+        }
+        async function createOrder() {
+          const msg = el('createMsg');
+          msg.textContent = '';
+          const dish = el('dish').value.trim();
+          if (!dish) { msg.textContent = 'Enter a dish name first.'; return; }
+          el('createBtn').disabled = true;
+          try {
+            const r = await fetch(apiBase + '/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dish }) });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
+            msg.textContent = `Created: ${data.dish} (${data.status})`;
+            el('dish').value = '';
+            await refreshOrders();
+            await refreshHealth();
+          } catch (e) { msg.textContent = `Create failed: ${e.message || e}`; }
+          finally { el('createBtn').disabled = false; }
+        }
+        el('createBtn').addEventListener('click', createOrder);
+        el('refreshBtn').addEventListener('click', refreshOrders);
+        el('dish').addEventListener('keydown', (e) => { if (e.key === 'Enter') createOrder(); });
+        refreshHealth(); refreshOrders(); setInterval(refreshHealth, 8000); setInterval(refreshOrders, 5000);
+      </script>
+    </body>
+    </html>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: web-ui-deployment, namespace: kitchen-app }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: kitchen-web-ui } }
+  template:
+    metadata: { labels: { app: kitchen-web-ui } }
+    spec:
+      containers:
+        - name: kitchen-web-ui
+          image: nginx:alpine
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 80 }]
+          livenessProbe:  { httpGet: { path: /health, port: 80 }, initialDelaySeconds: 10 }
+          readinessProbe: { httpGet: { path: /health, port: 80 }, initialDelaySeconds: 5 }
+          volumeMounts:
+            - name: web-ui-config
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: nginx.conf
+            - name: web-ui-config
+              mountPath: /usr/share/nginx/html/index.html
+              subPath: index.html
+          resources:
+            requests: { memory: '32Mi', cpu: '25m' }
+            limits:   { memory: '64Mi', cpu: '100m' }
+      volumes:
+        - name: web-ui-config
+          configMap:
+            name: web-ui-config
+---
+apiVersion: v1
+kind: Service
+metadata: { name: web-ui-service, namespace: kitchen-app }
+spec:
+  type: NodePort
+  selector: { app: kitchen-web-ui }
+  ports: [{ port: 80, targetPort: 80, nodePort: 30080 }]
