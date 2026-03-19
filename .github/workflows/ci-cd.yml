@@ -11,24 +11,22 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
 
       - name: Install API dependencies
-        working-directory: ./api
+        working-directory: api
         run: npm install
 
       - name: Run tests
-        working-directory: ./api
+        working-directory: api
         run: npm test
 
       - name: Build Docker API image
-        run: docker build -t kitchen-api:ci ./api --target production
+        run: docker build -t kitchen-api:ci ./api
 
       - name: Build Docker Web image
         run: docker build -t kitchen-web:ci ./web-ui
